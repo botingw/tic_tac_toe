@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Tic-Tac-Toe</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+        }
+        #gameContainer {
+            margin-top: 20px;
+        }
+        #status {
+            margin-top: 20px;
+            font-size: 24px;
+            color: #333;
+        }
+        .button {
+            margin: 10px;
+            padding: 10px 20px;
+            font-size: 18px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .button:hover {
+            background-color: #45a049;
+        }
+        .button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #modeSelection {
+            margin: 20px;
+            text-align: center;
+        }
+        #playAgainBtn {
+            display: none;
+        }
+        #gameInterface {
+            display: none;
+        }
+    </style>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+    <h1>Tic-Tac-Toe</h1>
+    
+    <!-- Mode Selection -->
+    <div id="modeSelection">
+        <h2>Select Game Mode</h2>
+        <button class="button" onclick="startGame('local')">Local 2 Players</button>
+        <button class="button" onclick="startGame('online')">Play Online</button>
+    </div>
+
+    <!-- Game Interface -->
+    <div id="gameInterface">
+        <div id="gameContainer"></div>
+        <div id="status">Waiting for opponent...</div>
+        <button id="playAgainBtn" class="button">Play Again</button>
+        <button id="backToMenu" class="button" onclick="backToModeSelection()">Back to Menu</button>
+    </div>
+
+    <script>
+        let gameMode = null;
+        let socket = null;
+        let game = null;
+        let graphics;
+        let cells = [];
+        let currentPlayer = '';
+        let gameActive = false;
+        let playAgainBtn = document.getElementById('playAgainBtn');
+        let hasRequestedRestart = false;
+
+        // Local game state
+        let localGameState = {
+            board: Array(9).fill(''),
+            currentPlayer: 'X',
+            status: 'ongoing',
+        };
+
+        // Game managers for different modes
+        const GameManager = {
+            local: {
+                setup() {
+                    gameActive = true;
+                    currentPlayer = 'X';
+                    document.getElementById('status')
+                        .textContent = "Player X's turn";
+                    resetLocalGame();
+                    playAgainBtn.textContent = 'New Game';
+                },
+                
+                handleMove(scene, position) {
+                    if (!gameActive || localGameState.board[position] !== '') {
+                        return;
+                    }
+
+                    localGameState.board[position] = localGameState.currentPlayer;
+                    
+                    if (checkWin(localGameState.board, localGameState.currentPlayer)) {
+                        gameActive = false;
+                        document.getElementById('status')
+                            .textContent = `Player ${localGameState.currentPlayer} wins!`;
+                        playAgainBtn.style.display = 'block';
+                        playAgainBtn.disabled = false;
+                        playAgainBtn.textContent = 'New Game';
+                    } else if (checkDraw(localGameState.board)) {
+                        gameActive = false;
+                        document.getElementById('status')
+                            .textContent = "It's a draw!";
+                        playAgainBtn.style.display = 'block';
+                        playAgainBtn.disabled = false;
+                        playAgainBtn.textContent = 'New Game';
+                    } else {
+                        localGameState.currentPlayer = 
+                            localGameState.currentPlayer === 'X' ? 'O' : 'X';
+                        document.getElementById('status')
+                            .textContent = `Player ${localGameState.currentPlayer}'s turn`;
+                    }
+
+                    updateBoard(scene, localGameState);
+                },
+
+                handlePlayAgain() {
+                    resetLocalGame();
+                    updateBoard(game.scene.scenes[0], localGameState);
+                    playAgainBtn.style.display = 'none';
+                    document.getElementById('status')
+                        .textContent = "Player X's turn";
+                    gameActive = true;
+                }
+            },
+
+            online: {
+                setup() {
+                    socket = io();
+                    document.getElementById('status')
+                        .textContent = "Waiting for opponent...";
+                    this.setupEventHandlers();
+                    playAgainBtn.textContent = 'Play Again';
+                },
+
+                handlePlayAgain() {
+                    socket.emit('play-again');
+                    playAgainBtn.disabled = true;
+                    playAgainBtn.textContent = 'Waiting for opponent...';
+                    hasRequestedRestart = true;
+                },
+
+                setupEventHandlers() {
+                    socket.on('player-assignment', (player) => {
+                        currentPlayer = player;
+                        document.getElementById('status')
+                            .textContent = `You are Player ${player}`;
+                    });
+
+                    socket.on('game-start', () => {
+                        gameActive = true;
+                        playAgainBtn.style.display = 'none';
+                        if (currentPlayer === 'X') {
+                            document.getElementById('status')
+                                .textContent = "Your turn (X)";
+                        } else {
+                            document.getElementById('status')
+                                .textContent = "Opponent's turn (X)";
+                        }
+                    });
+
+                    socket.on('game-state', (state) => {
+                        updateBoard(game.scene.scenes[0], state);
+                        if (state.status === 'ongoing') {
+                            gameActive = true;
+                            playAgainBtn.style.display = 'none';
+                            hasRequestedRestart = false;
+                            const isMyTurn = currentPlayer === state.currentPlayer;
+                            const statusText = isMyTurn
+                                ? `Your turn (${currentPlayer})`
+                                : `Opponent's turn (${state.currentPlayer})`;
+                            document.getElementById('status')
+                                .textContent = statusText;
+                        }
+                    });
+
+                    socket.on('game-over', (result) => {
+                        gameActive = false;
+                        const statusText = result.winner
+                            ? (result.winner === currentPlayer ? 'You won!' : 'You lost!')
+                            : "It's a draw!";
+                        document.getElementById('status')
+                            .textContent = statusText;
+                        playAgainBtn.style.display = 'block';
+                        playAgainBtn.disabled = false;
+                        playAgainBtn.textContent = 'Play Again';
+                    });
+
+                    socket.on('player-disconnected', () => {
+                        gameActive = false;
+                        document.getElementById('status')
+                            .textContent = 'Opponent disconnected. Waiting for new player...';
+                        playAgainBtn.style.display = 'none';
+                        clearBoard(game.scene.scenes[0]);
+                    });
+
+                    socket.on('game-full', () => {
+                        document.getElementById('status')
+                            .textContent = 'Game is full. Please try again later.';
+                        playAgainBtn.style.display = 'none';
+                    });
+
+                    socket.on('player-ready-restart', (player) => {
+                        if (player !== currentPlayer && !hasRequestedRestart) {
+                            document.getElementById('status')
+                                .textContent = 'Opponent wants to play again. Click Play Again to start!';
+                        }
+                    });
+                },
+
+                handleMove(scene, position) {
+                    const isValidMove = gameActive 
+                        && currentPlayer === scene.game.gameState?.currentPlayer;
+                    if (isValidMove) {
+                        socket.emit('make-move', position);
+                    }
+                }
+            }
+        };
+
+        function startGame(mode) {
+            gameMode = mode;
+            document.getElementById('modeSelection').style.display = 'none';
+            document.getElementById('gameInterface').style.display = 'block';
+
+            // Initialize Phaser game
+            if (!game) {
+                game = new Phaser.Game(config);
+            }
+
+            // Setup game based on mode
+            GameManager[mode].setup();
+        }
+
+        function backToModeSelection() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+            if (game) {
+                game.destroy(true);
+                game = null;
+            }
+            resetLocalGame();
+            document.getElementById('modeSelection').style.display = 'block';
+            document.getElementById('gameInterface').style.display = 'none';
+        }
+
+        function resetLocalGame() {
+            localGameState = {
+                board: Array(9).fill(''),
+                currentPlayer: 'X',
+                status: 'ongoing',
+            };
+        }
+
+        const config = {
+            type: Phaser.AUTO,
+            width: 600,
+            height: 600,
+            parent: 'gameContainer',
+            backgroundColor: '#ffffff',
+            scene: {
+                create: create,
+                preload: preload
+            }
+        };
+
+        playAgainBtn.addEventListener('click', () => {
+            GameManager[gameMode].handlePlayAgain();
+        });
+
+        function preload() {
+            // No assets to preload
+        }
+
+        function create() {
+            graphics = this.add.graphics();
+            drawGrid(this);
+            createCells(this);
+
+            if (gameMode === 'online') {
+                GameManager[gameMode].setupEventHandlers();
+            } else {
+                document.getElementById('status')
+                    .textContent = "Player X's turn";
+                gameActive = true;
+            }
+        }
+
+        function drawGrid(scene) {
+            graphics.lineStyle(4, 0x000000, 1);
+            
+            // Vertical lines
+            graphics.moveTo(200, 0);
+            graphics.lineTo(200, 600);
+            graphics.moveTo(400, 0);
+            graphics.lineTo(400, 600);
+            
+            // Horizontal lines
+            graphics.moveTo(0, 200);
+            graphics.lineTo(600, 200);
+            graphics.moveTo(0, 400);
+            graphics.lineTo(600, 400);
+            
+            graphics.strokePath();
+        }
+
+        function createCells(scene) {
+            for (let i = 0; i < 9; i++) {
+                const row = Math.floor(i / 3);
+                const col = i % 3;
+                const cell = scene.add.rectangle(
+                    col * 200 + 100,
+                    row * 200 + 100,
+                    200,
+                    200
+                );
+                cell.setInteractive();
+                cell.index = i;
+                
+                cell.on('pointerdown', () => handleMove(scene, i));
+                
+                // Add text for X/O
+                const text = scene.add.text(
+                    col * 200 + 100,
+                    row * 200 + 100,
+                    '',
+                    {
+                        fontSize: '120px',
+                        color: '#000000'
+                    }
+                ).setOrigin(0.5);
+                
+                cells[i] = text;
+            }
+        }
+
+        function updateBoard(scene, state) {
+            if (gameMode === 'online') {
+                scene.game.gameState = state;
+            }
+            state.board.forEach((value, index) => {
+                cells[index].setText(value);
+            });
+        }
+
+        function clearBoard(scene) {
+            cells.forEach(cell => cell.setText(''));
+        }
+
+        // Win checking function for local game
+        function checkWin(board, player) {
+            const winConditions = [
+                [0, 1, 2], [3, 4, 5], [6, 7, 8],  // Rows
+                [0, 3, 6], [1, 4, 7], [2, 5, 8],  // Columns
+                [0, 4, 8], [2, 4, 6]              // Diagonals
+            ];
+            return winConditions.some(condition => 
+                condition.every(index => board[index] === player)
+            );
+        }
+
+        function checkDraw(board) {
+            return board.every(cell => cell !== '');
+        }
+
+        function handleMove(scene, position) {
+            GameManager[gameMode].handleMove(scene, position);
+        }
+    </script>
+</body>
+</html> 
