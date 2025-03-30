@@ -64,3 +64,20 @@ http://localhost:3000
 - Real-time communication via WebSocket (Socket.IO)
 - Game state managed server-side
 - Responsive design that works on both desktop and mobile browsers 
+
+## Testing
+To run the tests:
+```bash
+# Install dev dependencies
+npm install
+
+# Run tests
+npm test
+```
+
+The test suite includes:
+- Game logic tests
+- Server functionality tests
+- Socket.IO connection tests
+
+Tests run on a separate port (3001) to avoid conflicts with the development server. 
